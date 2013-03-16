@@ -1,0 +1,100 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+
+use File::Temp;
+use File::Spec;
+
+my ($input, $output, $delay) = @ARGV;
+
+sub empty ($) {
+    return 1 if not defined $_[0];
+    return 1 if 0 == length $_[0];
+    return 0;
+}
+
+if (empty $input || empty $output) {
+    die "Usage: firefoxhtmltopdf <input-file> <output-file> [delay]\n";
+}
+
+my $url;
+if ($input =~ m/^https?:\/\//) {
+    $url = $input;
+} else {
+    $input = File::Spec->rel2abs($input);
+    $url = "file://$input";
+}
+
+$output = File::Spec->rel2abs($output);
+my (undef, @path) = File::Spec->splitpath($output);
+
+$delay = "1" if empty $delay;
+
+my $tmp = File::Temp->new(TEMPLATE => "tmp.XXXXXX", DIR => $path[0]);
+$tmp = File::Spec->rel2abs($tmp->filename);
+$tmp = "$tmp.pdf";
+(undef, @path) = File::Spec->splitpath($tmp);
+
+open my $fh, "|-", "osascript 1>/dev/null" or die "| osascript: $!";
+$fh->print(<<_END_);
+    tell application "Firefox"
+        Open Location "$url"
+    end tell
+
+    activate application "Firefox"
+
+    delay $delay
+
+    tell application "System Events"
+        tell process "Firefox"
+
+            keystroke "p" using command down
+            repeat until exists window "Print"
+                delay 0.2
+            end repeat
+
+            tell menu button "PDF" of window "Print"
+                click
+                delay 0.5
+                click menu item 1 of menu 1
+            end tell
+
+            repeat until exists window "Save"
+                delay 0.2
+            end repeat
+
+            tell window "Save"
+                keystroke "g" using {command down, shift down}
+                repeat until exists sheet 1
+                    delay 0.2
+                end repeat
+                tell sheet 1
+                    keystroke "$path[0]"
+                    click button "Go"
+                end tell
+                keystroke "$path[1]"
+                click button "Save"
+            end tell
+        end tell
+    end tell
+_END_
+close $fh;
+
+{
+    # Wait for full file to be emitted
+    # That is, for the file size to stop changing
+
+    my $size = 0;
+    while (0 == ($size = -s $tmp || 0)) {
+        sleep 1;
+    }
+    sleep 1;
+
+    while ($size != -s $tmp) {
+        $size = -s $tmp;
+        sleep 1;
+    }
+}
+
+rename $tmp, $output or die "$tmp => $output: $!\n";
